@@ -1,0 +1,21 @@
+# Folder library (berat dan bisa diinstall ulang)
+node_modules/
+backend/vendor/
+frontend/.expo/
+
+# File rahasia (SANGAT PENTING)
+.env
+*.env
+backend/.env
+frontend/.env
+
+# Hasil build/binari
+backend/main
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Log dan file sistem
+*.log
+.DS_Store
