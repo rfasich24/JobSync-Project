@@ -9,6 +9,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@react-native-community/datetimepicker": "8.4.4",
     "@supabase/supabase-js": "^2.101.0",
     "expo": "~54.0.33",
     "expo-auth-session": "~7.0.10",

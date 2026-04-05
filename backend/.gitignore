@@ -1,0 +1,36 @@
+# --- BINARIES & EXECUTABLES (Hasil Compile) ---
+# Mengabaikan file hasil 'go build'
+backend
+main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# --- SECRETS (SANGAT KRUSIAL) ---
+# Jangan sampai SUPABASE_DB_URL bocor!
+.env
+.env.*
+*.env
+
+# Kecualikan file contoh agar orang lain tahu cara setting-nya
+!.env.example
+
+# --- DEPENDENCIES ---
+# Di Go modern (go mod), folder vendor biasanya tidak di-push
+/vendor/
+
+# --- LOGS & TEST ---
+*.log
+*.out
+*.test
+debug
+debug.test
+
+# --- OS & IDE ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
