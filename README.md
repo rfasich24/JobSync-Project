@@ -56,10 +56,10 @@ Aplikasi ini menggunakan pendekatan arsitektur modern di mana Backend Golang ber
   - Inisialisasi Environment (Node.js, Go, Watchman).
   - Konfigurasi Database Supabase.
   - Tes koneksi Backend ke Database (BINGO!).
-- [ ] **Fase 2: Autentikasi & Integrasi Google**
+- [x] **Fase 2: Autentikasi & Integrasi Google**
   - Setup Google Cloud OAuth 2.0.
   - Implementasi Google Sign-In di React Native.
-- [ ] **Fase 3: CRUD Lamaran**
+- [x] **Fase 3: CRUD Lamaran**
   - Pembangunan API CRUD di Golang.
   - UI List Lamaran di React Native.
 - [ ] **Fase 4: Penjadwalan & Calendar Sync**
