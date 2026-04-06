@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, Alert, TextInput, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, Alert, TextInput, TouchableOpacity, Platform, RefreshControl } from 'react-native';
 import { supabase } from './supabase';
 import { api } from './src/api';
 import * as WebBrowser from 'expo-web-browser';
 import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import * as AuthSession from 'expo-auth-session';
+import * as Linking from 'expo-linking';
 
-WebBrowser.maybeCompleteAuthSession(); // WAJIB ADA untuk menangani redirect browser
 
-// IMPORT KOMPONEN MODULAR
+// Pastikan redirect browser ditangani dengan benar
+WebBrowser.maybeCompleteAuthSession();
+
+// IMPORT KOMPONEN
 import AppCard from './src/components/AppCard';
 import AgendaCard from './src/components/AgendaCard';
 import ProfileTab from './src/components/ProfileTab';
@@ -17,28 +20,32 @@ import ScheduleModal from './src/components/ScheduleModal';
 
 export default function App() {
   const [session, setSession] = useState(null);
+  // INISIALISASI SELALU DENGAN ARRAY KOSONG [] UNTUK MENCEGAH .filter/map IS NOT A FUNCTION
   const [applications, setApplications] = useState([]);
   const [interviews, setInterviews] = useState([]);
-  const [viewMode, setViewMode] = useState('all'); // all, calendar, profile
+  const [viewMode, setViewMode] = useState('all'); 
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Form States (Application)
   const [newCompany, setNewCompany] = useState('');
   const [newPosition, setNewPosition] = useState('');
   const [newNotes, setNewNotes] = useState('');
 
-  // Modal States
   const [selectedAppId, setSelectedAppId] = useState(null);
   const [isStatusModalVisible, setIsStatusModalVisible] = useState(false);
   const [isIntModalVisible, setIsIntModalVisible] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedInt, setSelectedInt] = useState(null);
 
-  // --- LOGIKA AUTH (Biar bisa Login) ---
-  const redirectTo = AuthSession.makeRedirectUri();
+  // --- LOGIKA AUTH (Lintas Platform) ---
+  const isWeb = Platform.OS === 'web';
+  
+  // Perbaikan Redirect URI agar tidak crash di Web
+  const redirectTo = isWeb 
+    ? window.location.origin 
+    : AuthSession.makeRedirectUri({ scheme: 'jobsync' });
 
   useEffect(() => {
-    // 1. Ambil session awal
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) { 
         setSession(session); 
@@ -46,26 +53,30 @@ export default function App() {
       }
     });
 
-    // 2. Pasang Listener (Auto-login/logout kalau status berubah)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (session) {
-        fetchData(session.access_token);
-      }
+      if (session) fetchData(session.access_token);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   const createSessionFromUrl = async (url) => {
-    const { params } = QueryParams.getQueryParams(url);
-    const { data, error } = await supabase.auth.setSession({
-      access_token: params.access_token,
-      refresh_token: params.refresh_token,
-    });
-    if (data.session) {
-      setSession(data.session);
-      fetchData(data.session.access_token);
+    try {
+      const { params, errorCode } = QueryParams.getQueryParams(url);
+      if (errorCode || !params?.access_token) return;
+
+      const { data, error } = await supabase.auth.setSession({
+        access_token: params.access_token,
+        refresh_token: params.refresh_token,
+      });
+
+      if (data?.session) {
+        setSession(data.session);
+        fetchData(data.session.access_token);
+      }
+    } catch (err) {
+      console.error("Session Error:", err);
     }
   };
 
@@ -73,77 +84,70 @@ export default function App() {
     try {
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo, skipBrowserRedirect: true },
+        options: { 
+          redirectTo, 
+          skipBrowserRedirect: !isWeb, // Di Web harus false agar redirect normal
+          queryParams: {
+            prompt: 'select_account', // Biar pilihan akun muncul terus
+            access_type: 'offline',
+          }
+        },
       });
+
       if (error) throw error;
 
-      const res = await WebBrowser.openAuthSessionAsync(data?.url ?? '', redirectTo);
-      if (res.type === 'success') {
-        await createSessionFromUrl(res.url);
+      // Mobile handling (Brave/Chrome popup di dalam App)
+      if (!isWeb && data?.url) {
+        const res = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+        if (res.type === 'success' && res.url) {
+          await createSessionFromUrl(res.url);
+        }
       }
     } catch (error) {
-      Alert.alert("Login Error", error.message);
+      console.error("Login Error:", error.message);
+      if (!isWeb) Alert.alert("Login Error", error.message);
     }
   };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setSession(null);
+    setApplications([]);
+    setInterviews([]);
   };
-
-  // --- LOGIKA DATA ---
+const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchData(); // Panggil ulang data dari Go
+    setRefreshing(false); // Matikan animasi muter-muter
+  };
+  // --- LOGIKA DATA (Resilient to 500 errors) ---
   const fetchData = async (tokenFromLogin = null) => {
     const token = tokenFromLogin || session?.access_token;
     if (!token) return;
+    
     setLoading(true);
     try {
       const apps = await api.getApplications(token);
       const ints = await api.getInterviews(token);
-      setApplications(apps);
-      setInterviews(ints);
+      
+      // PROTEKSI: Pastikan data yang masuk adalah Array
+      setApplications(Array.isArray(apps) ? apps : []);
+      setInterviews(Array.isArray(ints) ? ints : []);
     } catch (err) { 
-      console.error(err);
+      console.error("Gagal ambil data:", err);
+      // Kalau backend error 500, kita set array kosong agar UI tidak blank putih
+      setApplications([]);
+      setInterviews([]);
     } finally {
       setLoading(false);
     }
-  };
-
-  // --- HANDLERS ---
-  const handleAddApplication = async () => {
-    if (!newCompany || !newPosition) return Alert.alert("Isi Nama PT & Posisi!");
-    const res = await api.addApplication(session.access_token, {
-      user_id: session.user.id,
-      company_name: newCompany,
-      position: newPosition,
-      status: 'applied',
-      notes: newNotes
-    });
-    if (res.ok) { 
-      setNewCompany(''); setNewPosition(''); setNewNotes(''); 
-      fetchData(); 
-    }
-  };
-
-  const handleUpdateStatus = async (status) => {
-    const res = await api.updateStatus(session.access_token, selectedAppId, status);
-    if (res.ok) { setIsStatusModalVisible(false); fetchData(); }
-  };
-
-  const handleDelete = async (type, id) => {
-    Alert.alert("Hapus?", "Data akan hilang permanen.", [
-      { text: "Batal" },
-      { text: "Hapus", style: 'destructive', onPress: async () => {
-          await api.deleteResource(session.access_token, type, id);
-          fetchData();
-      }}
-    ]);
   };
 
   // --- RENDER LOGIN ---
   if (!session) {
     return (
       <View style={styles.loginContainer}>
-        <Text style={styles.header}>JobSync 🚀</Text>
+        <Text style={styles.headerTitle}>JobSync 🚀</Text>
         <Text style={styles.subHeader}>Kelola lamaran kerjamu dengan rapi</Text>
         <TouchableOpacity style={styles.loginBtn} onPress={performOAuth}>
           <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>Sign in with Google</Text>
@@ -155,9 +159,8 @@ export default function App() {
   // --- RENDER UTAMA ---
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>JobSync 🚀</Text>
+      <Text style={styles.headerTitle}>JobSync 🚀</Text>
 
-      {/* NAVIGATION TABS */}
       <View style={styles.tabContainer}>
         {['all', 'calendar', 'profile'].map((mode) => (
           <TouchableOpacity key={mode} 
@@ -170,35 +173,76 @@ export default function App() {
         ))}
       </View>
 
-      <ScrollView style={styles.content}>
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl 
+            refreshing={refreshing} 
+            onRefresh={onRefresh} 
+            colors={['#4285F4']} // Warna loading Android
+            tintColor="#4285F4"  // Warna loading iOS
+          />
+        }>
         {viewMode === 'all' && (
           <>
             <View style={styles.inputCard}>
               <TextInput placeholder="Nama PT" style={styles.input} value={newCompany} onChangeText={setNewCompany} />
               <TextInput placeholder="Posisi" style={styles.input} value={newPosition} onChangeText={setNewPosition} />
               <TextInput placeholder="Catatan (opsional)" style={styles.input} value={newNotes} onChangeText={setNewNotes} />
-              <TouchableOpacity style={styles.addButton} onPress={handleAddApplication}><Text style={styles.buttonText}>+ Tambah Lamaran</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.addButton} onPress={() => {
+                if (!newCompany || !newPosition) return Alert.alert("Eits!", "Isi Nama PT & Posisi dulu.");
+                api.addApplication(session.access_token, {
+                  user_id: session.user.id,
+                  company_name: newCompany,
+                  position: newPosition,
+                  status: 'applied',
+                  notes: newNotes
+                }).then(res => { if(res.ok) { setNewCompany(''); setNewPosition(''); setNewNotes(''); fetchData(); } });
+              }}>
+                <Text style={styles.buttonText}>+ Tambah Lamaran</Text>
+              </TouchableOpacity>
             </View>
-            {applications.map(item => (
-              <AppCard key={item.id} item={item} interviews={interviews}
+            
+            {/* Pakai Array.isArray untuk keamanan ekstra */}
+            {Array.isArray(applications) && applications.map(item => (
+              <AppCard key={item.id} item={item} interviews={interviews || []}
                 onStatusPress={(id) => { setSelectedAppId(id); setIsStatusModalVisible(true); }}
                 onAddSchedule={(id) => { setSelectedAppId(id); setIsEditMode(false); setIsIntModalVisible(true); }}
-                onDelete={(id) => handleDelete('app', id)} 
+                onDelete={(id) => {
+  // Lakukan pengecekan platform (Web vs Mobile)
+  if (Platform.OS === 'web') {
+    // Gunakan fungsi confirm() bawaan browser untuk Web
+    const confirmDelete = window.confirm("Hapus lamaran ini? Data akan hilang permanen.");
+    if (confirmDelete) {
+      api.deleteResource(session.access_token, 'app', id).then(() => fetchData());
+    }
+  } else {
+    // Gunakan Alert Native untuk iOS/Android
+    Alert.alert("Hapus?", "Data akan hilang permanen.", [
+      { text: "Batal", style: "cancel" },
+      { text: "Hapus", style: 'destructive', onPress: async () => {
+          await api.deleteResource(session.access_token, 'app', id);
+          fetchData();
+      }}
+    ]);
+  }
+}}
               />
             ))}
           </>
         )}
 
         {viewMode === 'calendar' && (
-          interviews.length > 0 ? (
+          Array.isArray(interviews) && interviews.length > 0 ? (
             interviews.map(intr => (
               <AgendaCard key={intr.interview?.id || intr.id} data={intr} 
                 onEdit={(data) => { setSelectedInt(data); setIsEditMode(true); setIsIntModalVisible(true); }}
-                onDelete={(id) => handleDelete('int', id)}
+                onDelete={(id) => {
+                  api.deleteResource(session.access_token, 'int', id).then(() => fetchData());
+                }}
               />
             ))
           ) : (
-            <Text style={{textAlign:'center', marginTop: 20, color: '#95A5A6'}}>Belum ada jadwal interview.</Text>
+            <Text style={{textAlign:'center', marginTop: 50, color: '#95A5A6'}}>Belum ada jadwal interview.</Text>
           )
         )}
 
@@ -206,14 +250,16 @@ export default function App() {
       </ScrollView>
 
       {/* MODALS */}
-      <StatusModal visible={isStatusModalVisible} onSelect={handleUpdateStatus} onClose={() => setIsStatusModalVisible(false)} />
+      <StatusModal visible={isStatusModalVisible} onSelect={async (status) => {
+         const res = await api.updateStatus(session.access_token, selectedAppId, status);
+         if (res.ok) { setIsStatusModalVisible(false); fetchData(); }
+      }} onClose={() => setIsStatusModalVisible(false)} />
       
       <ScheduleModal 
         visible={isIntModalVisible} 
         isEdit={isEditMode} 
         initialData={selectedInt}
         onSave={async (formData) => {
-          // application_id dikirim dari selectedAppId (saat tambah) atau dari initialData (saat edit)
           const payload = { ...formData, application_id: isEditMode ? selectedInt.interview.application_id : selectedAppId };
           await api.saveInterview(session.access_token, selectedInt?.interview?.id, payload, isEditMode);
           setIsIntModalVisible(false); 
@@ -226,13 +272,14 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F4F7F9', paddingTop: 60, alignItems: 'center' },
-  header: { fontSize: 28, fontWeight: 'bold', color: '#2C3E50', marginBottom: 5 },
+  
+  container: { flex: 1, backgroundColor: '#F4F7F9', paddingTop: Platform.OS === 'ios' ? 60 : 40, alignItems: 'center' },
+  headerTitle: { fontSize: 28, fontWeight: 'bold', color: '#2C3E50', marginBottom: 5 },
   subHeader: { fontSize: 14, color: '#7F8C8D', marginBottom: 30 },
-  content: { width: '92%', flex: 1 },
-  tabContainer: { flexDirection: 'row', backgroundColor: '#E0E5E9', borderRadius: 12, padding: 4, marginBottom: 15, width: '92%' },
+  content: { width: '92%', maxWidth: 800, flex: 1, alignSelf: 'center' },
+  tabContainer: { flexDirection: 'row', backgroundColor: '#E0E5E9', borderRadius: 12, padding: 4, marginBottom: 15, width: '92%', maxWidth: 800, alignSelf: 'center'},
   tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
-  activeTab: { backgroundColor: '#fff', elevation: 2 },
+  activeTab: { backgroundColor: '#fff', shadowColor: '#000', shadowOffset: {width:0, height:1}, shadowOpacity: 0.1, shadowRadius: 2 },
   activeTabText: { color: '#4285F4', fontWeight: 'bold' },
   inputCard: { backgroundColor: '#fff', padding: 15, borderRadius: 15, marginBottom: 15, elevation: 2 },
   input: { borderBottomWidth: 1, borderBottomColor: '#eee', marginBottom: 12, padding: 5 },
