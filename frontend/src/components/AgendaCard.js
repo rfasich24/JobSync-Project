@@ -69,5 +69,5 @@ const styles = StyleSheet.create({
   editText: { color: COLORS.primary, fontWeight: 'bold' },
   deleteText: { color: COLORS.dangerBorder, fontWeight: 'bold', marginLeft: 20 },
 });
-//g
+
 export default AgendaCard;
